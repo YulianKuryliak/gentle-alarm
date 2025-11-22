@@ -1,181 +1,151 @@
 package com.example.gentlealarm
 
-import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
+import android.graphics.Color
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var cameraManager: CameraManager
-    private var cameraId: String? = null
-    private var toneGenerator: ToneGenerator? = null
-
-    private val handler = Handler(Looper.getMainLooper())
-    private var isBlinkOn = false
-    private var isRunning = false
-    private var startTimeMs: Long = 0L
-
+    private lateinit var rootView: View
     private lateinit var tvStatus: TextView
     private lateinit var btnStart: Button
     private lateinit var btnStop: Button
 
-    private val blinkRunnable = object : Runnable {
-        override fun run() {
-            if (!isRunning) {
-                setTorch(false)
-                return
-            }
+    private val handler = Handler(Looper.getMainLooper())
+    private var isBlinkOn = false
+    private var isRunning = false
+    private var startTimeMs = 0L
 
-            val elapsed = System.currentTimeMillis() - startTimeMs
-            // 5 хвилин
-            if (elapsed >= 5 * 60 * 1000L) {
-                stopAlarm()
-                return
-            }
-
-            // Перемикаємо ліхтарик
-            isBlinkOn = !isBlinkOn
-            setTorch(isBlinkOn)
-            if (isBlinkOn) {
-                playBeep()
-            }
-
-            // Інтервал між спалахами, наприклад 500 мс
-            handler.postDelayed(this, 500L)
-        }
-    }
+    private var toneGenerator: ToneGenerator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        rootView = findViewById(android.R.id.content)
         tvStatus = findViewById(R.id.tvStatus)
         btnStart = findViewById(R.id.btnStart)
         btnStop = findViewById(R.id.btnStop)
 
-        cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        cameraId = cameraManager.cameraIdList.firstOrNull { id ->
-            val characteristics = cameraManager.getCameraCharacteristics(id)
-            characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
-        }
+        writeLog("=== App started at ${System.currentTimeMillis()} ===")
+
+        tvStatus.text = "Будильник вимкнений"
 
         btnStart.setOnClickListener {
-            if (!isRunning) {
-                startAlarmWithPermissionCheck()
-            }
+            startAlarmSafe()
         }
 
         btnStop.setOnClickListener {
             stopAlarm()
         }
-
-        updateStatus("Будильник вимкнений")
     }
 
-    private fun startAlarmWithPermissionCheck() {
-        val hasCameraPermission =
-            ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-                    PackageManager.PERMISSION_GRANTED
+    private fun startAlarmSafe() {
+        appendLog("Start button pressed")
 
-        if (!hasCameraPermission) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.CAMERA),
-                REQUEST_CAMERA
-            )
-        } else {
+        try {
             startAlarm()
+        } catch (e: Exception) {
+            appendLog("ERROR startAlarm: ${e.message}")
+            Toast.makeText(this, "Помилка старту: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun startAlarm() {
-        if (cameraId == null) {
-            Toast.makeText(this, "На цьому пристрої немає спалаху", Toast.LENGTH_SHORT).show()
-        }
+        if (isRunning) return
+
+        appendLog("Alarm started")
 
         toneGenerator = ToneGenerator(AudioManager.STREAM_ALARM, 100)
         isRunning = true
         startTimeMs = System.currentTimeMillis()
         isBlinkOn = false
+        tvStatus.text = "Будильник увімкнено"
 
         handler.post(blinkRunnable)
-        updateStatus("Будильник увімкнено")
+    }
+
+    private val blinkRunnable = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+
+            val elapsed = System.currentTimeMillis() - startTimeMs
+            if (elapsed >= 5 * 60 * 1000) {
+                appendLog("Alarm auto-stop after 5 min")
+                stopAlarm()
+                return
+            }
+
+            try {
+                isBlinkOn = !isBlinkOn
+
+                // Миготіння екраном (без камери)
+                rootView.setBackgroundColor(if (isBlinkOn) Color.WHITE else Color.BLACK)
+
+                // Звук
+                if (isBlinkOn) {
+                    toneGenerator?.startTone(
+                        ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD,
+                        150
+                    )
+                }
+
+            } catch (e: Exception) {
+                appendLog("Blink ERROR: ${e.message}")
+                stopAlarm()
+            }
+
+            handler.postDelayed(this, 500)
+        }
     }
 
     private fun stopAlarm() {
+        if (!isRunning) return
+
+        appendLog("Alarm stopped")
+
         isRunning = false
         handler.removeCallbacks(blinkRunnable)
-        setTorch(false)
+
+        // Відновити колір
+        rootView.setBackgroundColor(Color.BLACK)
+
         toneGenerator?.release()
         toneGenerator = null
-        isBlinkOn = false
-        updateStatus("Будильник вимкнено")
+
+        tvStatus.text = "Будильник вимкнений"
     }
 
-    private fun setTorch(on: Boolean) {
-        val id = cameraId ?: return
+    // -----------------------------
+    //       Л О Г У В А Н Н Я
+    // -----------------------------
+
+    private fun writeLog(content: String) {
         try {
-            cameraManager.setTorchMode(id, on)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+            val file = File(filesDir, "last_log.txt")
+            file.writeText(content + "\n")
+        } catch (_: Exception) {}
     }
 
-    private fun playBeep() {
+    private fun appendLog(line: String) {
         try {
-            toneGenerator?.startTone(
-                ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD,
-                150 // тривалість піка
-            )
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun updateStatus(text: String) {
-        tvStatus.text = text
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_CAMERA) {
-            val granted = grantResults.isNotEmpty() &&
-                    grantResults[0] == PackageManager.PERMISSION_GRANTED
-            if (granted) {
-                startAlarm()
-            } else {
-                Toast.makeText(
-                    this,
-                    "Без дозволу на камеру ліхтарик не працюватиме",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
+            val file = File(filesDir, "last_log.txt")
+            file.appendText(line + "\n")
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
-        super.onDestroy()
+        appendLog("App destroyed")
         stopAlarm()
-    }
-
-    companion object {
-        private const val REQUEST_CAMERA = 1001
+        super.onDestroy()
     }
 }
